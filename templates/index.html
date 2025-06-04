@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>图论问题解答器</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <style>
+    body { padding: 2rem; }
+    textarea { resize: vertical; min-height: 120px; }
+    #matrix-table input { width: 60px; text-align: center; }
+    #history-list {
+      max-height: 70vh;
+      overflow-y: auto;
+    }
+    #screenshot-select {
+      position: fixed;
+      border: 2px dashed #007bff;
+      background: rgba(0,123,255,0.1);
+      z-index: 9999;
+      pointer-events: none;
+      display: none;
+    }
+  </style>
+
+  <!-- Flask 注入的模型名和配置 -->
+  <script>
+    const modelNames = {{ model_names | tojson }};
+    const config = {{ config | tojson }};
+    const modelMap = {{ model_map | tojson }};
+  </script>
+</head>
+<body>
+<div class="container">
+  <div class="row">
+    <div class="col-md-8">
+      <h2>图论问题解答器（网页版）by sduzzx</h2>
+
+      <!-- 上传图片和问题 -->
+      <div class="mb-3">
+        <label class="form-label">上传题目图片：</label>
+        <input type="file" class="form-control" id="img-file">
+        <button class="btn btn-sm btn-primary mt-2" onclick="uploadImage()">识别文字</button>
+        <div class="form-text text-muted mt-1">
+          如需截图，请使用系统自带截图工具（如 Mac 的 Shift+Command+4 或 Windows 的 Win+Shift+S），然后导入图片。
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label">或手动输入题目：</label>
+        <textarea id="question" class="form-control" placeholder="请输入或识别题目"></textarea>
+      </div>
+
+      <div class="mb-3">
+        <button class="btn btn-success" onclick="askModel()">发送问题</button>
+        <button class="btn btn-secondary" onclick="openMatrixDialog()">输入邻接矩阵</button>
+        <button class="btn btn-outline-dark" onclick="openConfigDialog()">设置API</button>
+        <button class="btn btn-warning" onclick="clearInput()">清空输入</button>
+      </div>
+
+      <div class="mb-3" style="position:relative;">
+        <label class="form-label">模型回答：</label>
+        <textarea id="answer" class="form-control" readonly></textarea>
+        <div id="loading-spinner" class="spinner-border text-primary" role="status" style="display:none;position:absolute;right:20px;top:38px;width:2rem;height:2rem;">
+          <span class="visually-hidden">Loading...</span>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <h5>历史记录</h5>
+      <ul id="history-list" class="list-group"></ul>
+      <button class="btn btn-sm btn-secondary mt-2" onclick="exportHistory()">导出历史</button>
+      <input type="file" id="import-history" style="display:none" onchange="importHistory(event)">
+      <button class="btn btn-sm btn-secondary mt-2" onclick="document.getElementById('import-history').click()">导入历史</button>
+    </div>
+  </div>
+</div>
+
+<!-- 设置API模态框 -->
+<div class="modal" tabindex="-1" id="configModal">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">API 设置</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label>选择模型：</label>
+        <select class="form-select" id="model-select"></select>
+        <label class="mt-2">API 地址：</label>
+        <input type="text" class="form-control" id="api-url">
+        <label class="mt-2">API Key（可选）：</label>
+        <input type="text" class="form-control" id="api-key">
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="saveConfig()">保存</button>
+        <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 邻接矩阵模态框 -->
+<div class="modal" tabindex="-1" id="matrixModal">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">输入邻接矩阵</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label>顶点个数：</label>
+        <input id="matrix-size" type="number" class="form-control" value="5" min="1">
+        <label><input type="checkbox" id="undirected-checkbox"> 无向图（自动对称）</label>
+        <button class="btn btn-sm btn-primary mt-2" onclick="createMatrixTable()">生成表格</button>
+        <div id="matrix-container" class="mt-3"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="insertMatrix()">插入题目</button>
+        <button class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script>
+  
+function uploadImage() {
+  const file = document.getElementById('img-file').files[0];
+  if (!file) return alert("请先选择图片");
+  const form = new FormData();
+  form.append('image', file);
+  fetch('/ocr', { method: 'POST', body: form })
+    .then(res => res.json())
+    .then(data => document.getElementById('question').value = data.text);
+}
+
+function askModel() {
+  const q = document.getElementById('question').value.trim();
+  const answerBox = document.getElementById('answer');
+  const spinner = document.getElementById('loading-spinner');
+  if (!q) {
+    alert("请输入题目内容！");
+    return;
+  }
+  answerBox.value = '正在发送...';
+  spinner.style.display = 'inline-block';
+
+  if (config.model === "DeepSeek (支持流式输出)") {
+    answerBox.value = '';
+    fetch('/ask/stream', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({question: q})
+    }).then(response => {
+      if (!response.ok) {
+        answerBox.value = "发送失败：" + response.statusText;
+        spinner.style.display = 'none';
+        return;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      function read() {
+        reader.read().then(({done, value}) => {
+          if (done) {
+            spinner.style.display = 'none';
+            return;
+          }
+          buffer += decoder.decode(value, {stream: true});
+          let lines = buffer.split('\n\n');
+          buffer = lines.pop();
+          for (let line of lines) {
+            if (line.startsWith('data:')) {
+              const data = JSON.parse(line.slice(5));
+              answerBox.value += data.content;
+            }
+          }
+          read();
+        });
+      }
+      read();
+    }).catch(err => {
+      answerBox.value = "发送失败：" + err;
+      spinner.style.display = 'none';
+    });
+  } else {
+    fetch('/ask', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ question: q })
+    })
+    .then(res => res.json())
+    .then(data => {
+      spinner.style.display = 'none';
+      if (data.answer) {
+        answerBox.value = data.answer;
+        loadHistory();
+      } else {
+        answerBox.value = "发送失败：" + data.error;
+      }
+    })
+    .catch(err => {
+      spinner.style.display = 'none';
+      answerBox.value = "发送失败：" + err;
+    });
+  }
+}
+
+function loadHistory() {
+  fetch('/history')
+    .then(res => res.json())
+    .then(data => {
+      const list = document.getElementById('history-list');
+      list.innerHTML = '';
+      data.forEach((item, i) => {
+        const li = document.createElement('li');
+        li.className = 'list-group-item';
+        li.innerText = item[0].slice(0, 30) + '...';
+        li.onclick = () => {
+          document.getElementById('question').value = item[0];
+          document.getElementById('answer').value = item[1];
+        };
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-sm btn-danger float-end';
+        delBtn.innerText = '删除';
+        delBtn.onclick = e => {
+          e.stopPropagation();
+          fetch('/history/delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ index: i })
+          }).then(loadHistory);
+        };
+        li.appendChild(delBtn);
+        list.appendChild(li);
+      });
+    });
+}
+
+function openMatrixDialog() {
+  new bootstrap.Modal(document.getElementById('matrixModal')).show();
+}
+
+function createMatrixTable() {
+  const n = parseInt(document.getElementById('matrix-size').value);
+  const table = document.createElement('table');
+  table.id = 'matrix-table';
+  table.className = 'table table-bordered';
+  for (let i = 0; i < n; i++) {
+    const row = document.createElement('tr');
+    for (let j = 0; j < n; j++) {
+      const cell = document.createElement('td');
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = (i === j) ? 'inf' : '';
+      input.addEventListener('input', function() {
+        if (document.getElementById('undirected-checkbox').checked && i !== j) {
+          // 自动对称
+          const matrix = document.getElementById('matrix-table');
+          matrix.rows[j].cells[i].querySelector('input').value = this.value;
+        }
+      });
+      cell.appendChild(input);
+      row.appendChild(cell);
+    }
+    table.appendChild(row);
+  }
+  const container = document.getElementById('matrix-container');
+  container.innerHTML = '';
+  container.appendChild(table);
+}
+
+function insertMatrix() {
+  const table = document.getElementById('matrix-table');
+  const rows = table.querySelectorAll('tr');
+  const matrix = [];
+  rows.forEach(r => {
+    const row = [];
+    r.querySelectorAll('input').forEach(cell => {
+      row.push(cell.value || 'inf');
+    });
+    matrix.push(row);
+  });
+  const qBox = document.getElementById('question');
+  // 追加邻接矩阵到原有内容后面
+  if (qBox.value.trim()) {
+    qBox.value = qBox.value.trim() + '\n邻接矩阵:\n' + matrix.map(r => r.join(' ')).join('\n');
+  } else {
+    qBox.value = '邻接矩阵:\n' + matrix.map(r => r.join(' ')).join('\n');
+  }
+  bootstrap.Modal.getInstance(document.getElementById('matrixModal')).hide();
+}
+
+function openConfigDialog() {
+  const modal = new bootstrap.Modal(document.getElementById('configModal'));
+  const modelSel = document.getElementById('model-select');
+  const urlBox = document.getElementById('api-url');
+  const keyBox = document.getElementById('api-key');
+
+  // 清空并填入模型选项
+  modelSel.innerHTML = '';
+  modelNames.forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.text = name;
+    modelSel.appendChild(opt);
+  });
+
+  // 设置选中模型
+  modelSel.value = config.model;
+
+  // 自动填入 URL 和 Key
+  urlBox.value = config.url || modelMap[modelSel.value] || '';
+  keyBox.value = config.key || '';
+
+  // 切换模型时自动填入 API 地址
+  modelSel.onchange = () => {
+    urlBox.value = modelMap[modelSel.value] || '';
+  };
+
+  modal.show();
+}
+
+function saveConfig() {
+  fetch('/config', {
+    method: 'POST',
+    body: new URLSearchParams({
+      model: document.getElementById('model-select').value,
+      url: document.getElementById('api-url').value,
+      key: document.getElementById('api-key').value
+    })
+  }).then(() => {
+    // 只关闭弹窗，不刷新页面
+    bootstrap.Modal.getInstance(document.getElementById('configModal')).hide();
+    // 可选：更新 config 变量
+    config.model = document.getElementById('model-select').value;
+    config.url = document.getElementById('api-url').value;
+    config.key = document.getElementById('api-key').value;
+    // 可选：给用户一个提示
+    alert('API设置已保存！');
+  });
+}
+
+function clearInput() {
+  document.getElementById('question').value = '';
+  document.getElementById('answer').value = '';
+}
+
+function exportHistory() {
+  fetch('/history').then(res => res.json()).then(data => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'history.json';
+    link.click();
+  });
+}
+
+function importHistory(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    fetch('/history/import', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: e.target.result
+    }).then(() => loadHistory());
+  };
+  reader.readAsText(file);
+}
+
+function showStreamedAnswer(answer) {
+  const ansBox = document.getElementById('answer');
+  ansBox.value = '';
+  let i = 0;
+  function type() {
+    if (i < answer.length) {
+      ansBox.value += answer[i++];
+      setTimeout(type, 20); // 打字速度
+    }
+  }
+  type();
+}
+
+document.addEventListener('DOMContentLoaded', loadHistory);
+</script>
+</body>
+</html>
