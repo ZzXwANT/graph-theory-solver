@@ -1,0 +1,8 @@
+Flask
+requests
+paddleocr
+opencv-python
+numpy
+Pillow
+pyautogui
+PyQt5
